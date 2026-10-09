@@ -24,7 +24,7 @@ under the License.
     <parent>
         <groupId>org.apache.paimon</groupId>
         <artifactId>paimon-flink</artifactId>
-        <version>1.4.2</version>
+        <version>1.4.2-unity-0.1-SNAPSHOT</version>
     </parent>
 
     <packaging>jar</packaging>

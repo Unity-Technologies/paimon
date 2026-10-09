@@ -23,7 +23,7 @@
     <parent>
         <artifactId>paimon-filesystems</artifactId>
         <groupId>org.apache.paimon</groupId>
-        <version>1.4.2</version>
+        <version>1.4.2-unity-0.1-SNAPSHOT</version>
     </parent>
 
     <artifactId>paimon-azure-impl</artifactId>
