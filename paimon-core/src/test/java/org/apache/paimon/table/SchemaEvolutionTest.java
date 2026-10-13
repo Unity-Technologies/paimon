@@ -61,6 +61,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 import static org.apache.paimon.CoreOptions.AGG_FUNCTION;
@@ -92,6 +93,53 @@ public class SchemaEvolutionTest {
         identifier = SchemaManager.identifierFromPath(tablePath.toString(), true);
         schemaManager = new SchemaManager(LocalFileIO.create(), tablePath);
         commitUser = UUID.randomUUID().toString();
+    }
+
+    @Test
+    public void testMergeSchemaClosesSchemaModification() throws Exception {
+        Schema schema =
+                new Schema(
+                        RowType.of(DataTypes.INT(), DataTypes.BIGINT()).getFields(),
+                        Collections.emptyList(),
+                        Collections.emptyList(),
+                        new HashMap<>(),
+                        "");
+        schemaManager.createTable(schema);
+        AtomicInteger closed = new AtomicInteger();
+        CatalogEnvironment env =
+                new CatalogEnvironment(null, null, null, null, null, null, false, false) {
+
+                    @Override
+                    public SchemaModification schemaModification() {
+                        return new SchemaModification() {
+
+                            @Override
+                            public void alterSchema(List<SchemaChange> changes) throws Exception {
+                                schemaManager.commitChanges(changes);
+                            }
+
+                            @Override
+                            public void close() {
+                                closed.incrementAndGet();
+                            }
+                        };
+                    }
+                };
+        FileStoreTable table =
+                FileStoreTableFactory.create(
+                        LocalFileIO.create(), tablePath, schemaManager.latest().get(), env);
+
+        // nothing to merge
+        RowType rowType = table.rowType();
+        assertThat(table.store().mergeSchema(rowType, false)).isFalse();
+        assertThat(closed).hasValue(1);
+
+        // a new field
+        List<DataField> fields = new ArrayList<>(rowType.getFields());
+        fields.add(new DataField(2, "f2", DataTypes.STRING()));
+        assertThat(table.store().mergeSchema(rowType.copy(fields), false)).isTrue();
+        assertThat(schemaManager.latest().get().fieldNames()).containsExactly("f0", "f1", "f2");
+        assertThat(closed).hasValue(2);
     }
 
     @Test

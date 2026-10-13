@@ -19,33 +19,45 @@
 package org.apache.paimon.jdbc;
 
 import org.apache.paimon.catalog.Catalog;
+import org.apache.paimon.catalog.Catalog.TableNotExistException;
 import org.apache.paimon.catalog.CatalogContext;
 import org.apache.paimon.catalog.CatalogTestBase;
 import org.apache.paimon.catalog.Identifier;
+import org.apache.paimon.data.BinaryString;
+import org.apache.paimon.data.GenericRow;
+import org.apache.paimon.data.InternalRow;
 import org.apache.paimon.options.CatalogOptions;
 import org.apache.paimon.options.Options;
 import org.apache.paimon.schema.Schema;
 import org.apache.paimon.schema.SchemaChange;
+import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.Table;
+import org.apache.paimon.table.sink.BatchTableCommit;
+import org.apache.paimon.table.sink.BatchTableWrite;
+import org.apache.paimon.table.sink.BatchWriteBuilder;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataTypes;
+import org.apache.paimon.types.RowType;
 
 import org.apache.paimon.shade.guava30.com.google.common.collect.Lists;
 import org.apache.paimon.shade.guava30.com.google.common.collect.Maps;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 import java.io.ByteArrayOutputStream;
 import java.io.ObjectOutputStream;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.stream.Collectors;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -53,6 +65,8 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 
 /** Tests for {@link JdbcCatalog}. */
 public class JdbcCatalogTest extends CatalogTestBase {
+
+    @TempDir java.nio.file.Path databaseDir;
 
     @BeforeEach
     public void setUp() throws Exception {
@@ -618,5 +632,143 @@ public class JdbcCatalogTest extends CatalogTestBase {
                                         tableName))
                 .isInstanceOf(RuntimeException.class)
                 .hasMessageContaining("Failed to insert table");
+    }
+
+    @Test
+    public void testBranchTable() throws Exception {
+        try (JdbcCatalog catalog = initFileBackedCatalog()) {
+            catalog.createDatabase("test_db", false);
+            Identifier identifier = Identifier.create("test_db", "test_table");
+            catalog.createTable(identifier, DEFAULT_TABLE_SCHEMA, false);
+            FileStoreTable table = (FileStoreTable) catalog.getTable(identifier);
+            write(table, row(1));
+            table.createTag("tag1", 1);
+            table.createBranch("b1", "tag1");
+
+            Identifier branchIdentifier = Identifier.create("test_db", "test_table$branch_b1");
+            FileStoreTable branchTable = (FileStoreTable) catalog.getTable(branchIdentifier);
+            assertThat(branchTable.coreOptions().branch()).isEqualTo("b1");
+            assertThat(branchTable.catalogEnvironment().identifier()).isEqualTo(branchIdentifier);
+            assertThat(readKeys(branchTable)).containsExactly(1);
+
+            // writes to the branch do not affect main
+            write(branchTable, row(2));
+            assertThat(readKeys(catalog.getTable(branchIdentifier)))
+                    .containsExactlyInAnyOrder(1, 2);
+            assertThat(readKeys(catalog.getTable(identifier))).containsExactly(1);
+
+            // system tables of the branch
+            Table snapshots =
+                    catalog.getTable(
+                            Identifier.create("test_db", "test_table$branch_b1$snapshots"));
+            assertThat(read(snapshots, null, null, null, null)).hasSize(2);
+        }
+    }
+
+    @Test
+    public void testNonExistentBranch() throws Exception {
+        catalog.createDatabase("test_db", false);
+        catalog.createTable(
+                Identifier.create("test_db", "test_table"), DEFAULT_TABLE_SCHEMA, false);
+
+        Identifier branchIdentifier = Identifier.create("test_db", "test_table$branch_b1");
+        assertThatThrownBy(() -> catalog.getTable(branchIdentifier))
+                .isInstanceOf(TableNotExistException.class)
+                .hasMessageContaining("test_table$branch_b1");
+        List<SchemaChange> changes =
+                Collections.singletonList(SchemaChange.addColumn("col3", DataTypes.INT()));
+        assertThatThrownBy(() -> catalog.alterTable(branchIdentifier, changes, false))
+                .isInstanceOf(TableNotExistException.class)
+                .hasMessageContaining("test_table$branch_b1");
+        assertDoesNotThrow(() -> catalog.alterTable(branchIdentifier, changes, true));
+    }
+
+    @Test
+    public void testAlterBranchTable() throws Exception {
+        JdbcCatalog syncCatalog = initCatalogWithSync(true);
+        syncCatalog.createDatabase("test_db", false);
+        Identifier identifier = Identifier.create("test_db", "test_table");
+        syncCatalog.createTable(identifier, DEFAULT_TABLE_SCHEMA, false);
+        syncCatalog.getTable(identifier).createBranch("b1");
+        Map<String, String> mainProperties =
+                fetchTableProperties(syncCatalog, "test_db", "test_table");
+
+        Identifier branchIdentifier = Identifier.create("test_db", "test_table$branch_b1");
+        syncCatalog.alterTable(
+                branchIdentifier,
+                Lists.newArrayList(
+                        SchemaChange.addColumn("col3", DataTypes.INT()),
+                        SchemaChange.setOption("file.format", "orc")),
+                false);
+
+        Table branchTable = syncCatalog.getTable(branchIdentifier);
+        assertThat(branchTable.rowType().getFieldNames())
+                .containsExactly("pk", "col1", "col2", "col3");
+        assertThat(branchTable.options()).containsEntry("file.format", "orc");
+
+        // main schema and the table properties stored in jdbc are unchanged
+        Table mainTable = syncCatalog.getTable(identifier);
+        assertThat(mainTable.rowType().getFieldNames()).containsExactly("pk", "col1", "col2");
+        assertThat(mainTable.options()).doesNotContainKey("file.format");
+        assertThat(fetchTableProperties(syncCatalog, "test_db", "test_table"))
+                .isEqualTo(mainProperties);
+    }
+
+    @Test
+    public void testMergeSchemaOnBranchTable() throws Exception {
+        try (JdbcCatalog catalog = initFileBackedCatalog()) {
+            catalog.createDatabase("test_db", false);
+            Identifier identifier = Identifier.create("test_db", "test_table");
+            catalog.createTable(identifier, DEFAULT_TABLE_SCHEMA, false);
+            catalog.getTable(identifier).createBranch("b1");
+
+            // merging goes through the catalog, see CatalogEnvironment#schemaModification
+            Identifier branchIdentifier = Identifier.create("test_db", "test_table$branch_b1");
+            FileStoreTable branchTable = (FileStoreTable) catalog.getTable(branchIdentifier);
+            RowType rowType = branchTable.rowType();
+            List<DataField> fields = new ArrayList<>(rowType.getFields());
+            fields.add(new DataField(3, "col3", DataTypes.INT()));
+            assertThat(branchTable.store().mergeSchema(rowType.copy(fields), false)).isTrue();
+
+            assertThat(catalog.getTable(branchIdentifier).rowType().getFieldNames())
+                    .containsExactly("pk", "col1", "col2", "col3");
+            assertThat(catalog.getTable(identifier).rowType().getFieldNames())
+                    .containsExactly("pk", "col1", "col2");
+        }
+    }
+
+    /**
+     * Creates a catalog backed by a SQLite file. Tables loaded from the catalog open their own
+     * connections (for catalog locks and catalog loaders), and only a file database is shared
+     * between connections.
+     */
+    private JdbcCatalog initFileBackedCatalog() {
+        Map<String, String> props = Maps.newHashMap();
+        props.put(
+                CatalogOptions.URI.key(),
+                "jdbc:sqlite:" + databaseDir.resolve("catalog.db") + "?busy_timeout=30000");
+        return initCatalog(props);
+    }
+
+    private static GenericRow row(int pk) {
+        return GenericRow.of(
+                pk, BinaryString.fromString("col1-" + pk), BinaryString.fromString("col2-" + pk));
+    }
+
+    private static void write(Table table, InternalRow... rows) throws Exception {
+        BatchWriteBuilder writeBuilder = table.newBatchWriteBuilder();
+        try (BatchTableWrite write = writeBuilder.newWrite();
+                BatchTableCommit commit = writeBuilder.newCommit()) {
+            for (InternalRow row : rows) {
+                write.write(row);
+            }
+            commit.commit(write.prepareCommit());
+        }
+    }
+
+    private List<Integer> readKeys(Table table) throws Exception {
+        return read(table, null, null, null, null).stream()
+                .map(row -> row.getInt(0))
+                .collect(Collectors.toList());
     }
 }

@@ -66,6 +66,7 @@ import java.util.stream.Collectors;
 import static org.apache.paimon.catalog.CatalogUtils.checkNotBranch;
 import static org.apache.paimon.catalog.CatalogUtils.checkNotSystemDatabase;
 import static org.apache.paimon.catalog.CatalogUtils.checkNotSystemTable;
+import static org.apache.paimon.catalog.Identifier.DEFAULT_MAIN_BRANCH;
 import static org.apache.paimon.jdbc.JdbcCatalogLock.acquireTimeout;
 import static org.apache.paimon.jdbc.JdbcCatalogLock.checkMaxSleep;
 import static org.apache.paimon.jdbc.JdbcUtils.deleteProperties;
@@ -129,39 +130,50 @@ public class JdbcCatalog extends AbstractCatalog {
         connections.run(
                 conn -> {
                     DatabaseMetaData dbMeta = conn.getMetaData();
-                    ResultSet tableExists =
-                            dbMeta.getTables(null, null, JdbcUtils.CATALOG_TABLE_NAME, null);
-                    if (tableExists.next()) {
-                        return true;
+                    try (ResultSet tableExists =
+                            dbMeta.getTables(null, null, JdbcUtils.CATALOG_TABLE_NAME, null)) {
+                        if (tableExists.next()) {
+                            return true;
+                        }
                     }
-                    return conn.prepareStatement(JdbcUtils.CREATE_CATALOG_TABLE).execute();
+                    try (PreparedStatement statement =
+                            conn.prepareStatement(JdbcUtils.CREATE_CATALOG_TABLE)) {
+                        return statement.execute();
+                    }
                 });
 
         // Check and create database properties table.
         connections.run(
                 conn -> {
                     DatabaseMetaData dbMeta = conn.getMetaData();
-                    ResultSet tableExists =
+                    try (ResultSet tableExists =
                             dbMeta.getTables(
-                                    null, null, JdbcUtils.DATABASE_PROPERTIES_TABLE_NAME, null);
-                    if (tableExists.next()) {
-                        return true;
+                                    null, null, JdbcUtils.DATABASE_PROPERTIES_TABLE_NAME, null)) {
+                        if (tableExists.next()) {
+                            return true;
+                        }
                     }
-                    return conn.prepareStatement(JdbcUtils.CREATE_DATABASE_PROPERTIES_TABLE)
-                            .execute();
+                    try (PreparedStatement statement =
+                            conn.prepareStatement(JdbcUtils.CREATE_DATABASE_PROPERTIES_TABLE)) {
+                        return statement.execute();
+                    }
                 });
 
         // Check and create table properties table.
         connections.run(
                 conn -> {
                     DatabaseMetaData dbMeta = conn.getMetaData();
-                    ResultSet tableExists =
+                    try (ResultSet tableExists =
                             dbMeta.getTables(
-                                    null, null, JdbcUtils.TABLE_PROPERTIES_TABLE_NAME, null);
-                    if (tableExists.next()) {
-                        return true;
+                                    null, null, JdbcUtils.TABLE_PROPERTIES_TABLE_NAME, null)) {
+                        if (tableExists.next()) {
+                            return true;
+                        }
                     }
-                    return conn.prepareStatement(JdbcUtils.CREATE_TABLE_PROPERTIES_TABLE).execute();
+                    try (PreparedStatement statement =
+                            conn.prepareStatement(JdbcUtils.CREATE_TABLE_PROPERTIES_TABLE)) {
+                        return statement.execute();
+                    }
                 });
 
         // if lock enabled, Check and create distributed lock table.
@@ -409,11 +421,11 @@ public class JdbcCatalog extends AbstractCatalog {
     @Override
     protected void alterTableImpl(Identifier identifier, List<SchemaChange> changes)
             throws ColumnAlreadyExistException, TableNotExistException, ColumnNotExistException {
-        assertMainBranch(identifier);
         SchemaManager schemaManager = getSchemaManager(identifier);
         try {
             runWithLock(identifier, () -> schemaManager.commitChanges(changes));
-            if (syncTableProperties()) {
+            // only changes to the main branch affect the table properties stored in jdbc
+            if (syncTableProperties() && isMainBranch(identifier)) {
                 TableSchema updatedSchema = schemaManager.latest().get();
                 execute(
                         connections,
@@ -440,15 +452,21 @@ public class JdbcCatalog extends AbstractCatalog {
 
     @Override
     protected TableSchema loadTableSchema(Identifier identifier) throws TableNotExistException {
-        assertMainBranch(identifier);
         if (!JdbcUtils.tableExists(
                 connections, catalogKey, identifier.getDatabaseName(), identifier.getTableName())) {
             throw new TableNotExistException(identifier);
         }
         Path tableLocation = getTableLocation(identifier);
-        return tableSchemaInFileSystem(tableLocation, identifier.getBranchNameOrDefault())
-                .orElseThrow(
-                        () -> new RuntimeException("There is no paimon table in " + tableLocation));
+        Optional<TableSchema> schema =
+                tableSchemaInFileSystem(tableLocation, identifier.getBranchNameOrDefault());
+        if (schema.isPresent()) {
+            return schema.get();
+        }
+        if (!isMainBranch(identifier)) {
+            // the table exists, but the branch does not
+            throw new TableNotExistException(identifier);
+        }
+        throw new RuntimeException("There is no paimon table in " + tableLocation);
     }
 
     @Override
@@ -600,7 +618,12 @@ public class JdbcCatalog extends AbstractCatalog {
     }
 
     private SchemaManager getSchemaManager(Identifier identifier) {
-        return new SchemaManager(fileIO, getTableLocation(identifier));
+        return new SchemaManager(
+                fileIO, getTableLocation(identifier), identifier.getBranchNameOrDefault());
+    }
+
+    private static boolean isMainBranch(Identifier identifier) {
+        return DEFAULT_MAIN_BRANCH.equals(identifier.getBranchNameOrDefault());
     }
 
     private Map<String, String> fetchProperties(String databaseName) {
