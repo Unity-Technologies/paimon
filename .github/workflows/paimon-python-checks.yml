@@ -20,6 +20,8 @@ name: Python Check Code Style and Test
 
 on:
   push:
+    branches:
+      - 1.4.2-unity
     paths:
       - 'paimon-python/**'
       - '!**/*.md'

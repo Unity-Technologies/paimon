@@ -19,6 +19,8 @@ name: UTCase and ITCase Flink 1.x Others
 
 on:
   push:
+    branches:
+      - 1.4.2-unity
   pull_request:
     paths-ignore:
       - 'docs/**'

@@ -1158,6 +1158,35 @@ under the License.
     </build>
 
     <!--
+    To access Unity's Maven repositories locally, create an Identity Token at
+    https://unity3d.jfrog.io and configure Maven settings (usually ~/.m2/settings.xml).
+    Add a server entry for each repository id below. Use your JFrog username as the
+    username and the Identity Token as the password. Keep credentials out of this POM.
+    -->
+    <repositories>
+        <repository>
+            <id>vector-ai-unity-learner-mvn-dev-local</id>
+            <url>https://unity3d.jfrog.io/artifactory/vector-ai-unity-learner-mvn-dev-local</url>
+            <releases>
+                <enabled>false</enabled>
+            </releases>
+            <snapshots>
+                <enabled>true</enabled>
+            </snapshots>
+        </repository>
+        <repository>
+            <id>vector-ai-unity-learner-mvn-prod-local</id>
+            <url>https://unity3d.jfrog.io/artifactory/vector-ai-unity-learner-mvn-prod-local</url>
+            <releases>
+                <enabled>true</enabled>
+            </releases>
+            <snapshots>
+                <enabled>false</enabled>
+            </snapshots>
+        </repository>
+    </repositories>
+
+    <!--
     Uncomment the following "repositories" tag if your maven fails to download paimon-shade snapshot files.
     We comment these tags by default because downloading from apache repositories is very slow for both github and developers.
     -->

@@ -20,6 +20,8 @@ name: UTCase and ITCase Spark 3.x
 
 on:
   push:
+    branches:
+      - 1.4.2-unity
   pull_request:
     paths-ignore:
       - 'docs/**'

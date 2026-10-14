@@ -20,6 +20,8 @@ name: End to End Tests Flink 2.x on JDK 11
 
 on:
   push:
+    branches:
+      - 1.4.2-unity
   pull_request:
     paths-ignore:
       - 'docs/**'
