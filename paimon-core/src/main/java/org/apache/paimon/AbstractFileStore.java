@@ -57,6 +57,7 @@ import org.apache.paimon.table.BucketMode;
 import org.apache.paimon.table.CatalogEnvironment;
 import org.apache.paimon.table.FileStoreTable;
 import org.apache.paimon.table.PartitionModification;
+import org.apache.paimon.table.SchemaModification;
 import org.apache.paimon.table.sink.CallbackUtils;
 import org.apache.paimon.table.sink.CommitCallback;
 import org.apache.paimon.table.sink.CommitPreCallback;
@@ -67,6 +68,7 @@ import org.apache.paimon.tag.TagPreview;
 import org.apache.paimon.types.RowType;
 import org.apache.paimon.utils.ChangelogManager;
 import org.apache.paimon.utils.FileStorePathFactory;
+import org.apache.paimon.utils.IOUtils;
 import org.apache.paimon.utils.IndexFilePathFactories;
 import org.apache.paimon.utils.InternalRowPartitionComputer;
 import org.apache.paimon.utils.SegmentsCache;
@@ -266,8 +268,12 @@ abstract class AbstractFileStore<T> implements FileStore<T> {
 
     @Override
     public boolean mergeSchema(RowType rowType, boolean allowExplicitCast) {
-        return schemaManager.mergeSchema(
-                rowType, allowExplicitCast, catalogEnvironment.schemaModification());
+        SchemaModification schemaModification = catalogEnvironment.schemaModification();
+        try {
+            return schemaManager.mergeSchema(rowType, allowExplicitCast, schemaModification);
+        } finally {
+            IOUtils.closeQuietly(schemaModification);
+        }
     }
 
     @Override

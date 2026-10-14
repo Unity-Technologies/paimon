@@ -35,15 +35,19 @@ public abstract class AbstractDistributedLockDialect implements JdbcDistributedL
         connections.run(
                 conn -> {
                     DatabaseMetaData dbMeta = conn.getMetaData();
-                    ResultSet tableExists =
+                    try (ResultSet tableExists =
                             dbMeta.getTables(
-                                    null, null, JdbcUtils.DISTRIBUTED_LOCKS_TABLE_NAME, null);
-                    if (tableExists.next()) {
-                        return true;
+                                    null, null, JdbcUtils.DISTRIBUTED_LOCKS_TABLE_NAME, null)) {
+                        if (tableExists.next()) {
+                            return true;
+                        }
                     }
                     String createDistributedLockTableSql =
                             String.format(getCreateTableSql(), lockKeyMaxLength);
-                    return conn.prepareStatement(createDistributedLockTableSql).execute();
+                    try (PreparedStatement statement =
+                            conn.prepareStatement(createDistributedLockTableSql)) {
+                        return statement.execute();
+                    }
                 });
     }
 

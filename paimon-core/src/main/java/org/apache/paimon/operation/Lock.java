@@ -71,7 +71,19 @@ public interface Lock extends AutoCloseable {
         @Override
         public <T> T runWithLock(Callable<T> callable) throws Exception {
             return catalogLock.runWithLock(
-                    tablePath.getDatabaseName(), tablePath.getObjectName(), callable);
+                    tablePath.getDatabaseName(), lockName(tablePath), callable);
+        }
+
+        /**
+         * The main branch is locked by the table name, so that t and t$branch_main share a lock.
+         */
+        private static String lockName(Identifier identifier) {
+            return new Identifier(
+                            identifier.getDatabaseName(),
+                            identifier.getTableName(),
+                            identifier.getBranchName(),
+                            identifier.getSystemTableName())
+                    .getObjectName();
         }
 
         @Override
