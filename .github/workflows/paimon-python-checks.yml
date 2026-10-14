@@ -71,7 +71,7 @@ jobs:
         run: |
           if [[ "${{ matrix.python-version }}" == "3.6.15" ]]; then
             # Python 3.6's Bullseye security packages are now in the Debian archive.
-            sed -i 's@http://security.debian.org/debian-security@http://archive.debian.org/debian-security@g' /etc/apt/sources.list
+            sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|' /etc/apt/sources.list
           fi
           apt-get update && apt-get install -y \
             build-essential \
