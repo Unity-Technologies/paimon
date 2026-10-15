@@ -20,6 +20,8 @@ name: Python Check Code Style and Test
 
 on:
   push:
+    branches:
+      - 1.4.2-unity
     paths:
       - 'paimon-python/**'
       - '!**/*.md'
@@ -67,6 +69,10 @@ jobs:
       - name: Install system dependencies
         shell: bash
         run: |
+          if [[ "${{ matrix.python-version }}" == "3.6.15" ]]; then
+            # Python 3.6's Bullseye security packages are now in the Debian archive.
+            sed -i 's|security.debian.org/debian-security|archive.debian.org/debian-security|' /etc/apt/sources.list
+          fi
           apt-get update && apt-get install -y \
             build-essential \
             git \
